@@ -1,0 +1,19 @@
+services:
+  gateway:
+    build: .
+    image: greengateway:dev
+    env_file: [.env]
+    environment:
+      - PORT=8080
+    volumes:
+      - ./config/tenants.yaml:/app/config/tenants.yaml:ro
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped

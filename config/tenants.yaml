@@ -1,0 +1,29 @@
+# GreenGateway control plane — FREE-TIER edition.
+# Every model listed here is an OpenRouter ":free" model, so requests cost $0.
+#
+# Models below were picked from YOUR live free list (Sep 2026). Free models come
+# and go — re-check any time and swap a slug if one starts erroring:
+#   curl -s https://openrouter.ai/api/v1/models \
+#     | jq -r '.data[] | select(.pricing.prompt=="0" and .pricing.completion=="0") | .id' | sort
+tenants:
+  treetracker-admin:
+    key: gg_live_local_dev_key
+    budget_usd: 1.00                          # you won't reach it — free models cost $0
+    allow_models:
+      - z-ai/glm-5.2:free
+      - google/gemma-4-31b-it:free
+    fallbacks:
+      - google/gemma-4-31b-it:free            # if the primary is busy, try this one
+    policy:
+      allow_fallbacks: true
+      data_collection: allow                  # most FREE models require this (they may log inputs)
+
+  # Still here to prove the budget wall (402) without spending anything:
+  demo-nobudget:
+    key: gg_live_nobudget
+    budget_usd: 0
+    allow_models:
+      - z-ai/glm-5.2:free
+    policy:
+      allow_fallbacks: true
+      data_collection: allow

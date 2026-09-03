@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: greengateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['gateway:8080']   # service name on the compose network
