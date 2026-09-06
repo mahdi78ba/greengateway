@@ -47,6 +47,6 @@ test('metrics endpoint exposes counters', async () => {
   const app = build();
   const res = await app.inject({ method: 'GET', url: '/metrics' });
   assert.strictEqual(res.statusCode, 200);
-  assert.match(res.body, /llm_requests_total/);
+  assert.match(res.body, /ggw_requests_total/);
   await app.close();
 });

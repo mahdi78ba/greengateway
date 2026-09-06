@@ -1,29 +1,29 @@
-# GreenGateway control plane — FREE-TIER edition.
-# Every model listed here is an OpenRouter ":free" model, so requests cost $0.
+# ---- Phase 2: optional per-tenant routing overrides ----
+# Only these two knobs are honored. Defaults live in getRouting() (chat.js):
+#   maxAttempts    : 3       (bounded failover hops; protects the 50/day free pool)
+#   slo.timeoutMs  : 20000   (per-attempt AbortController timeout)
+# Circuit-breaker thresholds are process-global/fixed (breaker.js) — not
+# tenant-tunable, because free-pool health is global, not per-tenant.
 #
-# Models below were picked from YOUR live free list (Sep 2026). Free models come
-# and go — re-check any time and swap a slug if one starts erroring:
-#   curl -s https://openrouter.ai/api/v1/models \
-#     | jq -r '.data[] | select(.pricing.prompt=="0" and .pricing.completion=="0") | .id' | sort
+# IMPORTANT: your tenants.yaml uses the MAP form (keyed by tenant id) — keep it.
+# Just ADD the `routing:` block under treetracker-admin; leave demo-nobudget as is.
+# (Do NOT switch to a list/`- id:` form — your loadConfig() reads Object.entries.)
 tenants:
   treetracker-admin:
     key: gg_live_local_dev_key
-    budget_usd: 1.00                          # you won't reach it — free models cost $0
-    allow_models:
-      - z-ai/glm-5.2:free
-      - google/gemma-4-31b-it:free
-    fallbacks:
-      - google/gemma-4-31b-it:free            # if the primary is busy, try this one
-    policy:
-      allow_fallbacks: true
-      data_collection: allow                  # most FREE models require this (they may log inputs)
+    budget_usd: 1.00
+    allow_models: [z-ai/glm-5.2:free, google/gemma-4-31b-it:free]
+    fallbacks: [google/gemma-4-31b-it:free]
+    policy: { allow_fallbacks: true, data_collection: allow }
+    routing:                  # <-- ADD THIS BLOCK (optional; override only what you want)
+      maxAttempts: 3
+      slo:
+        timeoutMs: 20000
 
-  # Still here to prove the budget wall (402) without spending anything:
   demo-nobudget:
     key: gg_live_nobudget
     budget_usd: 0
-    allow_models:
-      - z-ai/glm-5.2:free
-    policy:
-      allow_fallbacks: true
-      data_collection: allow
+    allow_models: [z-ai/glm-5.2:free]
+    policy: { allow_fallbacks: true, data_collection: allow }
+    # no `routing:` block -> inherits getRouting() defaults
+

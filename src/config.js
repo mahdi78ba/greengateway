@@ -27,6 +27,7 @@ function loadConfig(file) {
       allow_models: t.allow_models,
       fallbacks: t.fallbacks || [],
       policy: t.policy || {},
+      routing: t.routing || undefined,
     });
   }
   return { byKey };
