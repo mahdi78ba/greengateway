@@ -1,30 +1,33 @@
+// src/server.js — COMPLETE
 'use strict';
 const Fastify = require('fastify');
 const { loadConfig } = require('./config');
-const { register } = require('./metrics');
 const { makeAuth } = require('./plugins/auth');
+const { register } = require('./metrics');
 const healthRoutes = require('./routes/health');
 const chatRoutes = require('./routes/chat');
 
 function build() {
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL || 'info' },
-    bodyLimit: 256 * 1024, // 256 KB request guardrail
+    bodyLimit: 256 * 1024,
   });
-
   const config = loadConfig();
   const auth = makeAuth(config);
-  const spend = new Map(); // in-memory per-tenant spend (MVP; Redis in Phase 4)
+  const spend = new Map();
 
-  // Unauthenticated ops endpoints
   app.register(healthRoutes);
   app.get('/metrics', async (req, reply) => {
-    reply.header('content-type', register.contentType);
+    reply.type(register.contentType);
     return register.metrics();
   });
 
-  // Authenticated proxy
-  app.register(chatRoutes(spend), { auth });
+  // Phase 3: chatRoutes() returns the plugin with the cache instance attached
+  // as `.cache`. Decorating from inside the plugin would only decorate its own
+  // encapsulated context, so the root-level decoration happens here.
+  const chatPlugin = chatRoutes(spend);
+  app.register(chatPlugin, { auth });
+  app.decorate('ggwCache', chatPlugin.cache);
 
   return app;
 }

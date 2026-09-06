@@ -1,4 +1,6 @@
+// src/config.js — COMPLETE
 'use strict';
+
 const fs = require('node:fs');
 const path = require('node:path');
 const yaml = require('js-yaml');
@@ -28,8 +30,10 @@ function loadConfig(file) {
       fallbacks: t.fallbacks || [],
       policy: t.policy || {},
       routing: t.routing || undefined,
+      cache: t.cache || undefined, // Phase 3: optional per-tenant cache block
     });
   }
+
   return { byKey };
 }
 

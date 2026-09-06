@@ -1,13 +1,12 @@
-# ---- Phase 2: optional per-tenant routing overrides ----
-# Only these two knobs are honored. Defaults live in getRouting() (chat.js):
-#   maxAttempts    : 3       (bounded failover hops; protects the 50/day free pool)
-#   slo.timeoutMs  : 20000   (per-attempt AbortController timeout)
-# Circuit-breaker thresholds are process-global/fixed (breaker.js) — not
-# tenant-tunable, because free-pool health is global, not per-tenant.
+# config/tenants.yaml
+# MAP form, keyed by tenant id. src/config.js does
+#   for (const [id, t] of Object.entries(doc.tenants))
+# so a list form ("- id: ...") BREAKS the loader. Do not convert this to a list.
 #
-# IMPORTANT: your tenants.yaml uses the MAP form (keyed by tenant id) — keep it.
-# Just ADD the `routing:` block under treetracker-admin; leave demo-nobudget as is.
-# (Do NOT switch to a list/`- id:` form — your loadConfig() reads Object.entries.)
+# Phase 3 adds an OPTIONAL `cache:` block. It is optional on purpose:
+# demo-nobudget deliberately has none, which proves that a tenant with no block
+# gets the defaults from src/cache/index.js (DEFAULTS) and keeps working.
+
 tenants:
   treetracker-admin:
     key: gg_live_local_dev_key
@@ -15,15 +14,42 @@ tenants:
     allow_models: [z-ai/glm-5.2:free, google/gemma-4-31b-it:free]
     fallbacks: [google/gemma-4-31b-it:free]
     policy: { allow_fallbacks: true, data_collection: allow }
-    routing:                  # <-- ADD THIS BLOCK (optional; override only what you want)
-      maxAttempts: 3
-      slo:
-        timeoutMs: 20000
+    routing: { maxAttempts: 3, slo: { timeoutMs: 20000 } }
+    # Phase 3. Every key is optional; anything omitted falls back to DEFAULTS.
+    cache:
+      enabled: true              # master switch for this tenant
+      ttlSeconds: 86400          # 24h. 0 = DO NOT CACHE. -1 = never expire (explicit sentinel).
+      volatileTtlSeconds: 60     # prompts with today/now/price/latest/... words.
+                                 # Same rules: 0 = do not cache those at all, -1 = no extra limit.
+      maxEntries: 500            # per-tenant LRU cap (entry count)
+      maxBytes: 8388608          # per-tenant LRU cap (8 MB of stored response bodies)
+      semantic: true             # tier 1 (near-duplicate) on
+      threshold: 0.85            # cosine score required for a semantic hit
+      similarity: lexical        # READ PER TENANT. 'lexical' is the only backend that
+                                 # ships in the core path; anything else (e.g. 'local',
+                                 # the transformers.js STRETCH) THROWS on first use and
+                                 # is logged as "lookup failed, going upstream" — it is
+                                 # never silently downgraded.
+      semanticMaxTemperature: 0.3  # above this: exact tier only.
+                                 # A request that OMITS `temperature` is treated as 0,
+                                 # i.e. cacheable, even though the upstream default is
+                                 # 1.0. Deliberate: almost no client sends the field, and
+                                 # treating them all as "asked for variance" would switch
+                                 # the semantic tier off for nearly all traffic. Set this
+                                 # to -1 for the strict reading (exact tier only, always).
+      maxSemanticCandidates: 200   # per-bucket scan cap (bounded lookup latency)
+      maxResponseChars: 32000      # bodies larger than this are never memoized
+      minContentTokens: 2          # prompts with fewer surviving content tokens get the
+                                   # exact tier only — this is what stops a mostly-CJK
+                                   # prompt from being compared on its two Latin words
 
   demo-nobudget:
     key: gg_live_nobudget
     budget_usd: 0
     allow_models: [z-ai/glm-5.2:free]
     policy: { allow_fallbacks: true, data_collection: allow }
-    # no `routing:` block -> inherits getRouting() defaults
-
+    # No `cache:` block on purpose: this tenant runs on DEFAULTS
+    # (enabled, 24h TTL, 500 entries / 8 MB, semantic on at 0.85, lexical backend).
+    # It also never reaches the cache in practice: budget_usd 0 means the 402
+    # in src/routes/chat.js fires first, which is exactly what the Phase-1
+    # smoke test asserts.
