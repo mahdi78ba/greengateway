@@ -2,4 +2,5 @@ node_modules/
 .env
 *.log
 npm-debug.log*
-coverage/.qodo/
+coverage/
+.qodo/

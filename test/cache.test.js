@@ -1,4 +1,10 @@
 'use strict';
+// PHASE 4: HTTP-level suites run on in-memory state only, so they never read or
+// write a developer's real Redis and give the same result on every run, and
+// with the proactive limiter off, so they test one behaviour at a time. Redis
+// logic and the limiter have their own offline tests in phase4.test.js.
+process.env.GGW_REDIS_DISABLED = '1';
+process.env.GGW_RATELIMIT_DISABLED = '1';
 
 /**
  * test/cache.test.js — Phase 3, fully OFFLINE.

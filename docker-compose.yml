@@ -2,18 +2,63 @@ services:
   gateway:
     build: .
     image: greengateway:dev
-    env_file: [.env]
+    env_file: .env
     environment:
-      - PORT=8080
+      # Inside the compose network Redis is "redis". The default 127.0.0.1 would
+      # be the gateway container ITSELF, which leaves it degraded to memory.
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - ./config/tenants.yaml:/app/config/tenants.yaml:ro
     ports:
       - "8080:8080"
     restart: unless-stopped
+
+  # Second replica for the shared-state proofs:  docker compose --profile ha up -d
+  gateway-b:
+    image: greengateway:dev
+    profiles: ["ha"]
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./config/tenants.yaml:/app/config/tenants.yaml:ro
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    # Shared state only: no persistence, a hard memory cap, and eviction limited
+    # to keys that carry a TTL (cache entries, rate-limit windows). The budget
+    # counters have no TTL, so memory pressure can never reset a tenant's spend.
+    command:
+      - redis-server
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - volatile-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
-    restart: unless-stopped

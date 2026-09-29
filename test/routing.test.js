@@ -1,4 +1,8 @@
 'use strict';
+// PHASE 4: same switches as the HTTP-level suites (in-memory state only, limiter
+// off). This file tests the pure routing modules, so they are belt-and-braces.
+process.env.GGW_REDIS_DISABLED = '1';
+process.env.GGW_RATELIMIT_DISABLED = '1';
 const { test } = require('node:test');
 const assert = require('node:assert');
 

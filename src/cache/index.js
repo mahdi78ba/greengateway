@@ -338,10 +338,80 @@ function effectiveTtlSeconds(cfg, isVolatile) {
  * response  = { status:number, body:object }
  * meta      = { model, provider, attempts, costUsd, promptTokens, completionTokens, latencyMs }
  */
+/**
+ * PHASE 4 - store adapter.
+ *
+ * src/redis/store.js is async and exposes get/set/candidates/size/delete/clear/
+ * stats. The per-shard store this file drives is sync and exposes
+ * get/put/listBucket/touch/setLimits/size/bytes/prune/clear/stats. This bridges
+ * the two so a Redis-backed cache survives gateway restarts.
+ *
+ * Only get/put/listBucket are awaited at their call sites, so the rest stay
+ * synchronous and cheap. Three deliberate differences from the in-memory store:
+ *   - recency (LRU) and the maxEntries/maxBytes caps live inside the shared
+ *     store, so touch() and setLimits() are no-ops here;
+ *   - eviction callbacks never fire, so IDF statistics are not decremented on
+ *     evict (and start empty after a restart). IDF only re-weights terms; the
+ *     number/negation guards and the threshold still decide every hit;
+ *   - size()/bytes() are sync but the shared store counts asynchronously, so
+ *     they return the numbers loaded on this shard's first lookup and after
+ *     every put. They only feed the ggw_cache_entries gauge.
+ */
+function adaptInjectedStore(injected, tenantId) {
+  const ctx = { tenantId };
+  let known = { entries: 0, bytes: 0 };
+  let loaded = null;
+
+  async function refresh() {
+    try {
+      const s = await injected.stats(ctx);
+      known = { entries: Number(s && s.entries) || 0, bytes: Number(s && s.bytes) || 0 };
+    } catch (_err) { /* keep the last known numbers */ }
+  }
+
+  return {
+    async get(key) {
+      // Once per shard: a restarted replica must report the entries already in
+      // Redis, not 0, before it has written anything itself.
+      if (!loaded) loaded = refresh();
+      await loaded;
+      return injected.get(key, ctx);
+    },
+    async put(entry) {
+      const ok = await injected.set(entry.key, entry, ctx);
+      await refresh();
+      return ok;
+    },
+    listBucket(bucketKey, limit) {
+      return injected.candidates(bucketKey, { limit, tenantId });
+    },
+    touch() { /* recency lives in the shared store */ },
+    setLimits() { /* the shared store enforces its own caps */ },
+    size() { return known.entries; },
+    bytes() { return known.bytes; },
+    prune() { return 0; }, // entries carry their own TTL; the store sweeps on write
+    clear() {
+      const n = known.entries;
+      known = { entries: 0, bytes: 0 };
+      Promise.resolve()
+        .then(() => injected.clear(ctx))
+        .catch(() => {}); // fire-and-forget must never become an unhandled rejection
+      return n;
+    },
+    stats() {
+      return { store: injected.backend(), tenant: tenantId, size: known.entries, bytes: known.bytes };
+    },
+  };
+}
+
 function createCache(opts) {
   const o = opts || {};
   const now = typeof o.now === 'function' ? o.now : Date.now;
   const defaults = Object.assign({}, DEFAULTS, o.defaults || {});
+  // PHASE 4: when server.js injects an async (Redis-backed) store, every shard
+  // uses it instead of building a per-tenant in-memory store. When it is absent
+  // the Phase-3 in-memory path runs unchanged.
+  const injectedStore = o.store || null;
 
   let overrideBackend = null;
   if (o.backend && typeof o.backend === 'object') overrideBackend = o.backend;
@@ -382,12 +452,16 @@ function createCache(opts) {
     }
 
     const idf = sim.createIdf();
-    const store = createStore({
-      maxEntries: cfg.maxEntries,
-      maxBytes: cfg.maxBytes,
-      now,
-      onEvict(entry) { if (entry && entry.vector) idf.remove(entry.vector); },
-    });
+    // PHASE 4: an injected store is shared across tenants and namespaces itself
+    // by tenantId, so it is adapted rather than constructed once per shard.
+    const store = injectedStore
+      ? adaptInjectedStore(injectedStore, tenantId)
+      : createStore({
+          maxEntries: cfg.maxEntries,
+          maxBytes: cfg.maxBytes,
+          now,
+          onEvict(entry) { if (entry && entry.vector) idf.remove(entry.vector); },
+        });
     shard = {
       store,
       idf,
@@ -508,7 +582,7 @@ function createCache(opts) {
     maybePrune(shard, p.cfg);
 
     // Tier 0 — exact.
-    const exact = shard.store.get(p.exactKey);
+    const exact = await shard.store.get(p.exactKey);
     if (exact) {
       return {
         hit: true, tier: 'exact', entry: exact,
@@ -520,7 +594,7 @@ function createCache(opts) {
     if (p.semanticAllowed) {
       const probe = await vectorFor(p, shard.backend);
       if (probe) {
-        const candidates = shard.store.listBucket(p.bucketKey, p.cfg.maxSemanticCandidates);
+        const candidates = await shard.store.listBucket(p.bucketKey, p.cfg.maxSemanticCandidates);
         let best = null;
         let bestScore = 0;
         for (const cand of candidates) {
@@ -589,7 +663,7 @@ function createCache(opts) {
       hits: 0,
     };
 
-    shard.store.put(entry);
+    await shard.store.put(entry);
     if (vector) shard.idf.add(vector);
 
     return { stored: true, reason: 'stored', entry, ttlSeconds };

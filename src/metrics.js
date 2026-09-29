@@ -3,14 +3,22 @@
 /**
  * src/metrics.js — GreenGateway Prometheus registry.
  *
- * Phase 3 ADDS six cache series and changes NOTHING else: every metric name,
- * label set and export from Phases 1-2 is byte-identical, so the existing
+ * Every metric in the process is declared HERE, at module scope, exactly once.
+ * Never construct a Counter/Gauge/Histogram inside a factory: prom-client throws
+ * "A metric with the name ... has already been registered" the second time the
+ * factory runs (two limiters in one process, two tests in one file). Phase-4
+ * components take the metric objects by injection instead.
+ *
+ * Phase 3 added six cache series and Phase 4 adds five Redis / rate-limit
+ * series. Neither changes anything that came before: every metric name, label
+ * set and export from earlier phases is byte-identical, so the existing
  * /metrics smoke test (`/ggw_requests_total/`) and any Grafana panels keep
  * working.
  *
  * LABEL CARDINALITY RULE: labels are drawn only from bounded, gateway-controlled
- * vocabularies — tenant id, model id, provider, status class, cache tier.
- * User input (prompt text, cache keys, error strings) NEVER becomes a label.
+ * vocabularies — tenant id, model id, provider, status class, cache tier,
+ * rate-limit window. User input (prompt text, cache keys, error strings) NEVER
+ * becomes a label.
  */
 
 const client = require('prom-client');
@@ -97,7 +105,7 @@ const failover = new client.Counter({
 });
 
 /* ------------------------------------------------------------------------- */
-/* Phase 3 — cache (NEW)                                                     */
+/* Phase 3 — cache (UNCHANGED)                                               */
 /* ------------------------------------------------------------------------- */
 
 /**
@@ -123,13 +131,9 @@ const cacheMisses = new client.Counter({
  * spent against the ~20 req/min, ~50 req/day per-account free quota.
  * Hit rate = ggw_cache_hits_total / (ggw_cache_hits_total + ggw_cache_misses_total).
  *
- * COMPATIBILITY NOTE FOR EXISTING PANELS: the NAME and LABELS of every Phase-1/2
- * metric are byte-identical, but the MEANING of ggw_requests_total widens —
- * src/routes/chat.js counts a cache hit under provider="cache". Any panel or
- * alert that means "requests sent upstream" must now say
- *   ggw_requests_total{provider!="cache"}
- * Nothing else in Phases 1-2 is affected: ggw_cost_usd_total and
- * ggw_tokens_total are deliberately NOT touched on a hit.
+ * src/routes/chat.js counts a cache hit in ggw_requests_total under
+ * provider="cache". Any panel or alert that means "requests sent upstream"
+ * must therefore say ggw_requests_total{provider!="cache"}.
  */
 const cacheSaved = new client.Counter({
   name: 'ggw_cache_saved_requests_total',
@@ -140,14 +144,14 @@ const cacheSaved = new client.Counter({
 
 const cacheEntries = new client.Gauge({
   name: 'ggw_cache_entries',
-  help: 'Live entries currently held in the in-memory cache (all tenants)',
+  help: 'Live cache entries (all tenants; with Redis: as of this replica\'s last write)',
   registers: [register],
 });
 
 /**
  * Buckets are sub-millisecond-heavy on purpose: the lexical backend scans a
  * bucket in-process, so anything above ~10 ms means the bucket scan cap
- * (maxSemanticCandidates) needs lowering.
+ * (maxSemanticCandidates) needs lowering — or, with Redis, that Redis is slow.
  */
 const cacheLookup = new client.Histogram({
   name: 'ggw_cache_lookup_seconds',
@@ -167,6 +171,47 @@ const cacheSavings = new client.Counter({
   name: 'ggw_cache_savings_usd',
   help: 'USD that cache hits would have cost upstream (0.00 on :free models)',
   labelNames: ['tenant'],
+  registers: [register],
+});
+
+/* ------------------------------------------------------------------------- */
+/* Phase 4 — shared state (Redis) + proactive rate limiting (NEW)            */
+/* ------------------------------------------------------------------------- */
+
+const redisUp = new client.Gauge({
+  name: 'ggw_redis_up',
+  help: 'Whether shared Redis state is usable right now (1) or the gateway is degraded to in-memory state (0)',
+  registers: [register],
+});
+// Initialised at boot so `curl /metrics | grep ggw_redis_up` prints a line
+// before the very first chat request.
+redisUp.set(0);
+
+const redisDegraded = new client.Counter({
+  name: 'ggw_redis_degraded_total',
+  help: 'Transitions into degraded (in-memory) mode, by the component that saw the failure. Moves on the TRANSITION only, never per call',
+  labelNames: ['component'],
+  registers: [register],
+});
+
+const ratelimitAllowed = new client.Counter({
+  name: 'ggw_ratelimit_allowed_total',
+  help: 'Proactive rate-limit checks that passed, counted once per window',
+  labelNames: ['tenant', 'window'],
+  registers: [register],
+});
+
+const ratelimitThrottled = new client.Counter({
+  name: 'ggw_ratelimit_throttled_total',
+  help: 'Requests refused locally by the proactive limiter, labelled with the deciding window',
+  labelNames: ['tenant', 'window'],
+  registers: [register],
+});
+
+const ratelimitRemaining = new client.Gauge({
+  name: 'ggw_ratelimit_remaining',
+  help: 'Requests left in the window after the most recent check',
+  labelNames: ['tenant', 'window'],
   registers: [register],
 });
 
@@ -191,4 +236,10 @@ module.exports = {
   cacheEntries,
   cacheLookup,
   cacheSavings,
+  // Phase 4
+  redisUp,
+  redisDegraded,
+  ratelimitAllowed,
+  ratelimitThrottled,
+  ratelimitRemaining,
 };
