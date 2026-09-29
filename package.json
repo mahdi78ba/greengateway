@@ -21,7 +21,12 @@
     "scan:secrets": "docker run --rm -v \"$PWD:/repo:ro\" ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact --exit-code 1 /repo",
     "scan:image": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ -e TRIVY_DB_REPOSITORY=public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2 aquasec/trivy:0.74.0 image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 greengateway:dev",
     "sbom": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:v1.52.0 docker:greengateway:dev -o spdx-json > sbom.spdx.json",
-    "check": "npm test && npm run audit && npm run lint:docker && npm run lint:actions && npm run scan:secrets && npm run obs:check"
+    "check": "npm test && npm run audit && npm run lint:docker && npm run lint:actions && npm run scan:secrets && npm run obs:check && npm run helm:lint",
+    "helm:lint": "helm lint --strict deploy/helm/greengateway --set-file tenantsYaml=config/tenants.yaml && helm template ggw deploy/helm/greengateway --set-file tenantsYaml=config/tenants.yaml > /dev/null && echo chart ok",
+    "k8s:up": "bash deploy/k3d/up.sh",
+    "k8s:down": "bash deploy/k3d/down.sh",
+    "k8s:status": "KUBECONFIG=.k3d/kubeconfig.yaml kubectl get pods,svc,hpa -l app.kubernetes.io/instance=ggw",
+    "k6": "docker run --rm -i --add-host=host.docker.internal:host-gateway -e BASE_URL=${BASE_URL:-http://host.docker.internal:8090} grafana/k6:2.3.0 run - < deploy/k6/load.js"
   },
   "engines": {
     "node": ">=24"

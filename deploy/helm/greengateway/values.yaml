@@ -1,0 +1,53 @@
+# Default values for the GreenGateway chart. Every value here is overridable
+# with --set / --values at install time; the defaults describe the LOCAL LAB
+# (k3d, mock upstream, $0). See deploy/k3d/up.sh for how they are used.
+
+image:
+  # The local lab imports greengateway:dev straight into k3d (no registry).
+  # For a real cluster: repository ghcr.io/mahdi78ba/greengateway, tag "0.6.0".
+  repository: greengateway
+  tag: dev            # empty = Chart.appVersion
+  pullPolicy: IfNotPresent
+
+# Used only when autoscaling.enabled is false; otherwise the HPA owns the count.
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 50   # of resources.requests.cpu
+
+# Small on purpose: 50 % of 100m is easy to exceed with a k6 run, so the HPA
+# demo is visible in minutes. No CPU limit (throttling hurts latency); a memory
+# limit because a Node leak should hit the pod, not the node.
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { memory: 256Mi }
+
+service:
+  # LoadBalancer on k3d = reachable from your laptop (k3d maps host 8090 -> 8080).
+  type: LoadBalancer
+  port: 8080
+
+logLevel: info
+
+# Seconds Kubernetes waits after SIGTERM before SIGKILL. Must exceed
+# GGW_SHUTDOWN_DELAY_MS + the longest in-flight upstream call.
+terminationGracePeriodSeconds: 25
+
+# The tenant file (keys, budgets, model lists) is NOT in the image; pass it at
+# install time:  --set-file tenantsYaml=config/tenants.yaml
+tenantsYaml: ""
+
+# Upstream. mock.enabled=true deploys tools/mock-openrouter.js from the same
+# image and points the gateway at it: no OpenRouter quota is ever used.
+mock:
+  enabled: true
+openrouter:
+  base: https://openrouter.ai/api/v1   # used only when mock.enabled is false
+  apiKey: ""                           # required when mock.enabled is false
+
+redis:
+  enabled: true        # a single Redis pod, no persistence (shared state only)
+  url: ""              # set to use an external Redis instead

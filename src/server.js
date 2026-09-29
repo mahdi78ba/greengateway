@@ -54,6 +54,9 @@ function build() {
   instrumentHttp(app);
   setBuildInfo();
 
+  // PHASE 6: readiness flag, flipped to false by the SIGTERM handler in start().
+  app.decorate('ggwState', { ready: true });
+
   // Phase-2 in-memory spend Map: still here, now as the budget's fallback AND
   // live mirror, so an outage mid-flight degrades without a code path change.
   const spend = new Map();
@@ -109,6 +112,25 @@ function build() {
 
 async function start() {
   const app = build();
+
+  // PHASE 6: graceful shutdown. Kubernetes (and `docker stop`) send SIGTERM and
+  // wait terminationGracePeriodSeconds before SIGKILL. Node as PID 1 would
+  // otherwise ignore SIGTERM and be killed mid-request. Order matters:
+  //   1. /readyz starts answering 503, so the Service drops this pod;
+  //   2. a short pause lets that endpoint change propagate;
+  //   3. app.close() stops accepting, finishes in-flight requests, quits Redis.
+  const shutdown = async (signal) => {
+    app.log.info({ signal }, 'shutdown: draining');
+    app.ggwState.ready = false;
+    await new Promise((r) => setTimeout(r, Number(process.env.GGW_SHUTDOWN_DELAY_MS || 2000)));
+    await app.close();
+    app.log.info('shutdown: done');
+    process.exit(0);
+  };
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => shutdown(signal).catch((err) => { app.log.error(err); process.exit(1); }));
+  }
+
   try {
     await app.listen({ host: '0.0.0.0', port: Number(process.env.PORT || 8080) });
   } catch (err) {

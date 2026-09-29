@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "greengateway.fullname" . }}
+  labels: {{- include "greengateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  # Never fewer ready pods than now during a rollout: start the new one first.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: {{- include "greengateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels: {{- include "greengateway.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+      annotations:
+        # A changed tenant file rolls the pods (a ConfigMap edit alone would not).
+        checksum/tenants: {{ .Values.tenantsYaml | sha256sum }}
+    spec:
+      automountServiceAccountToken: false   # the app never talks to the API server
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true                  # the image already runs as uid 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: LOG_LEVEL, value: {{ .Values.logLevel | quote }} }
+            - { name: REDIS_URL, value: {{ include "greengateway.redisUrl" . | quote }} }
+            - { name: OPENROUTER_BASE, value: {{ include "greengateway.upstreamBase" . | quote }} }
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ include "greengateway.fullname" . }}, key: OPENROUTER_API_KEY }
+            # Pause between "readiness 503" and closing the listener (see src/server.js).
+            - { name: GGW_SHUTDOWN_DELAY_MS, value: "3000" }
+          volumeMounts:
+            - { name: tenants, mountPath: /app/config, readOnly: true }
+          # Liveness = is the process alive (restart if not).
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          # Readiness = may it receive traffic (drop from the Service if not).
+          # Checked often, so a draining pod leaves the Service within ~2 s.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 2
+            failureThreshold: 1
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: {{- include "greengateway.containerSecurityContext" . | nindent 12 }}
+      volumes:
+        - name: tenants
+          configMap: { name: {{ include "greengateway.fullname" . }}-tenants }

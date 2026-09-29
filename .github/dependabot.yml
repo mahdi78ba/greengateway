@@ -24,10 +24,14 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
-  # The two FROM lines of the Dockerfile (tag + digest).
+  # The two FROM lines of the Dockerfile (tag + digest). The Node MAJOR is a
+  # deliberate LTS choice (24 until 2028), so majors are not proposed.
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly, day: monday }
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
 
   # redis, prometheus, alertmanager and grafana in docker-compose.yml.
   # greengateway:dev is built locally, not pulled, so it is not looked up.

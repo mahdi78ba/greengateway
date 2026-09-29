@@ -1,0 +1,53 @@
+{{- if .Values.mock.enabled }}
+# The fake OpenRouter from Phase 5, run from the same image: $0, no quota, and
+# faults on demand through its /__admin API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "greengateway.fullname" . }}-mock
+  labels: {{- include "greengateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "greengateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mock
+  template:
+    metadata:
+      labels: {{- include "greengateway.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mock
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mock
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["tools/mock-openrouter.js"]   # the image entrypoint is `node`
+          env:
+            - { name: MOCK_HOST, value: "0.0.0.0" }
+            - { name: MOCK_PORT, value: "8099" }
+          ports:
+            - { name: http, containerPort: 8099 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext: {{- include "greengateway.containerSecurityContext" . | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "greengateway.fullname" . }}-mock
+  labels: {{- include "greengateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mock
+spec:
+  ports:
+    - { name: http, port: 8099, targetPort: http }
+  selector: {{- include "greengateway.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mock
+{{- end }}

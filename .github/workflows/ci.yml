@@ -1,9 +1,9 @@
 # .github/workflows/ci.yml — GreenGateway CI/CD (Phases 9 + 10)
 #
-# Every push and pull request runs four independent gates in parallel
-# (tests, lint, secret scan, alert-rule tests; pull requests also get a
-# dependency review, which reports but does not gate the image job). Only when
-# the four are green does the image job build ONE image, boot it, scan it,
+# Every push and pull request runs five independent gates in parallel
+# (tests, lint, secret scan, alert-rule tests, helm chart; pull requests also
+# get a dependency review, which reports but does not gate the image job). Only
+# when the five are green does the image job build ONE image, boot it, scan it,
 # inventory it (SBOM) and, on a push to main or a v* tag only, publish it to
 # GHCR with signed provenance and SBOM attestations. Pull requests never
 # publish anything. The first push creates a PRIVATE GHCR package; making it
@@ -105,6 +105,18 @@ jobs:
       # Same command as on a laptop. No .env is needed (env_file: required: false).
       - run: npm run obs:check
 
+  chart:
+    name: helm chart (lint, render)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # helm is preinstalled on the runner. Same command as `npm run helm:lint`.
+      - run: helm lint --strict deploy/helm/greengateway --set-file tenantsYaml=config/tenants.yaml
+      - run: helm template ggw deploy/helm/greengateway --set-file tenantsYaml=config/tenants.yaml > /dev/null
+
   dependency-review:
     name: dependency review (pull requests)
     if: github.event_name == 'pull_request'
@@ -124,7 +136,7 @@ jobs:
 
   image:
     name: image (build, smoke test, scan, SBOM, publish)
-    needs: [test, lint, secret-scan, observability]
+    needs: [test, lint, secret-scan, observability, chart]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

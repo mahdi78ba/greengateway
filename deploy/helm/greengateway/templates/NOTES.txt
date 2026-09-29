@@ -1,0 +1,12 @@
+GreenGateway {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}".
+
+  gateway : {{ include "greengateway.fullname" . }}  (Service type {{ .Values.service.type }}, port {{ .Values.service.port }})
+  redis   : {{ if .Values.redis.enabled }}{{ include "greengateway.fullname" . }}-redis{{ else }}external ({{ .Values.redis.url }}){{ end }}
+  upstream: {{ include "greengateway.upstreamBase" . }}{{ if .Values.mock.enabled }}  (MOCK: no OpenRouter quota is used){{ end }}
+
+Watch it:
+  kubectl get pods,hpa -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+On k3d (deploy/k3d/up.sh) the gateway answers on http://localhost:8090:
+  curl -s localhost:8090/healthz
+  curl -s localhost:8090/readyz

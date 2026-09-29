@@ -1,0 +1,12 @@
+{{- if not .Values.tenantsYaml }}
+{{- fail "tenantsYaml is empty: install with --set-file tenantsYaml=config/tenants.yaml" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "greengateway.fullname" . }}-tenants
+  labels: {{- include "greengateway.labels" . | nindent 4 }}
+data:
+  # Mounted at /app/config/tenants.yaml, exactly where docker-compose mounts it.
+  tenants.yaml: |
+{{ .Values.tenantsYaml | indent 4 }}

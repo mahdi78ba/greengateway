@@ -1,0 +1,6 @@
+apiVersion: v2
+name: greengateway
+description: GreenGateway, a policy-driven LLM gateway in front of OpenRouter, with its Redis and (for the lab) a mock upstream.
+type: application
+version: 0.1.0     # chart version: bump when the templates change
+appVersion: "0.6.0" # application version: the image tag used when image.tag is empty

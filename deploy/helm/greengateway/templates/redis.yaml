@@ -1,0 +1,50 @@
+{{- if .Values.redis.enabled }}
+# One Redis pod, no persistence: it holds shared state the gateway can rebuild
+# (cache, rate-limit windows, breaker snapshots). Killing it is a Phase 6 drill.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "greengateway.fullname" . }}-redis
+  labels: {{- include "greengateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "greengateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels: {{- include "greengateway.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999             # the "redis" user of the official image
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: redis
+          image: redis:8-alpine
+          args: ["--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "volatile-lru"]
+          ports:
+            - { name: redis, containerPort: 6379 }
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 192Mi }
+          securityContext: {{- include "greengateway.containerSecurityContext" . | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "greengateway.fullname" . }}-redis
+  labels: {{- include "greengateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  ports:
+    - { name: redis, port: 6379, targetPort: redis }
+  selector: {{- include "greengateway.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+{{- end }}

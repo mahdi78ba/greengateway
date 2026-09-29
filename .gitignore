@@ -7,3 +7,5 @@ coverage/
 # local scan outputs (Phase 9/10)
 *.sarif
 sbom*.json
+# Phase 6: local cluster kubeconfig
+.k3d/
