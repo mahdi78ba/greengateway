@@ -1,7 +1,7 @@
 # ---- build stage: full Node toolchain, installs production dependencies only ----
 # Pinned by tag AND digest: the tag is for humans, the digest is what is pulled
 # (Dependabot's "docker" ecosystem bumps both when a new image is published).
-FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
+FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 # --ignore-scripts: no dependency gets to run code on the build machine.
