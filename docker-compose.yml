@@ -71,7 +71,7 @@ services:
 
   # ---------------------------------------------------------- Phase 5: observability
   prometheus:
-    image: prom/prometheus:v3.14.0
+    image: prom/prometheus:v3.15.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
