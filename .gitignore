@@ -4,3 +4,6 @@ node_modules/
 npm-debug.log*
 coverage/
 .qodo/
+# local scan outputs (Phase 9/10)
+*.sarif
+sbom*.json

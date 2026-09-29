@@ -1,4 +1,8 @@
-node_modules
-.git
-.env
-*.log
+# Allow-list: only these paths are sent to Docker as the build context.
+# Everything else (.env, .git, node_modules, config/, test/, observability/,
+# .github/, *.md) stays out, even if a COPY line is careless.
+*
+!package.json
+!package-lock.json
+!src/
+!tools/

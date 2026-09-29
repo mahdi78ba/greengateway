@@ -1,18 +1,303 @@
+# .github/workflows/ci.yml — GreenGateway CI/CD (Phases 9 + 10)
+#
+# Every push and pull request runs four independent gates in parallel
+# (tests, lint, secret scan, alert-rule tests; pull requests also get a
+# dependency review, which reports but does not gate the image job). Only when
+# the four are green does the image job build ONE image, boot it, scan it,
+# inventory it (SBOM) and, on a push to main or a v* tag only, publish it to
+# GHCR with signed provenance and SBOM attestations. Pull requests never
+# publish anything. The first push creates a PRIVATE GHCR package; making it
+# public is a one-time click in the package settings.
+#
+# Supply-chain rules used throughout:
+#   - every action is pinned to a full commit SHA; the "# vX.Y.Z" comment is
+#     for humans and Dependabot keeps both in sync
+#   - the workflow token is read-only; a job asks for more only where it must
+#   - nothing here ever calls the real OpenRouter (tests use an in-process
+#     mock, the smoke test only hits /healthz)
 name: ci
+
 on:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
   pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same PR cancels the stale run. A main or tag run is
+# never cancelled: stopping it mid-push would leave a half-published release.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }} # GHCR needs lowercase; mahdi78ba/greengateway is
+
 jobs:
-  build:
+  test:
+    name: unit tests (Node 24)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
           cache: npm
-      - run: npm ci
+      # --ignore-scripts here too: no dependency runs code on the runner either.
+      - run: npm ci --ignore-scripts
       - run: npm test
-      - name: Build image
-        run: docker build -t greengateway:ci .
+      # Known advisories in production dependencies. Fails on HIGH or CRITICAL.
+      - run: npm audit --omit=dev --audit-level=high
+
+  lint:
+    name: lint Dockerfile and workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: hadolint (Dockerfile best practices)
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+      - name: actionlint (this workflow's own syntax, plus shellcheck of run blocks)
+        run: >
+          docker run --rm -v "$PWD:/repo" -w /repo
+          rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -color .github/workflows/ci.yml
+
+  secret-scan:
+    name: secret scan (gitleaks, full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full clone: gitleaks walks every commit ever made
+          persist-credentials: false
+      # The same command as `npm run scan:secrets`, image pinned by digest.
+      # (The gitleaks GitHub Action only scans the commits of the current push,
+      # and nothing at all on a tag push; running gitleaks directly scans it all.)
+      # gitleaks exits 0 with "0 commits scanned" when git cannot read the repo,
+      # so the second line turns that silent pass into a failure.
+      - run: |
+          docker run --rm -v "$PWD:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git --redact --exit-code 1 /repo 2>&1 | tee gitleaks.log
+          grep -Eq '[1-9][0-9]* commits scanned' gitleaks.log || { echo "::error::gitleaks scanned 0 commits"; exit 1; }
+
+  observability:
+    name: alert rules (promtool unit tests, amtool)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Same command as on a laptop. No .env is needed (env_file: required: false).
+      - run: npm run obs:check
+
+  dependency-review:
+    name: dependency review (pull requests)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # only to post the failure comment
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  image:
+    name: image (build, smoke test, scan, SBOM, publish)
+    needs: [test, lint, secret-scan, observability]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write        # push to GHCR (push events only)
+      security-events: write # Trivy report into the Security tab
+      id-token: write        # Sigstore signing of the attestation
+      attestations: write    # store the attestation on GitHub
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Tags: main push -> main, sha-<7>; tag v1.2.3 -> 1.2.3, 1.2, latest, sha-<7>;
+      # PR -> pr-<n> (computed, never pushed). "latest" means "latest release".
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.licenses=MIT
+
+      # Build once, load into the runner's Docker, push nothing yet: the exact
+      # bytes get smoke-tested, scanned and inventoried before any publish step.
+      - name: build (load locally)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      # A scanner cannot tell whether the image boots. This can. The tenant
+      # file is mounted, never baked in (same as docker-compose.yml).
+      - name: smoke test (the image must answer /healthz)
+        run: |
+          docker run -d --name ggw -p 8080:8080 \
+            -e GGW_REDIS_DISABLED=1 -e GGW_RATELIMIT_DISABLED=1 \
+            -e OPENROUTER_API_KEY=sk-ci-never-used \
+            -v "$PWD/config/tenants.yaml:/app/config/tenants.yaml:ro" \
+            "$IMAGE:ci"
+          if ! curl --retry 20 --retry-delay 1 --retry-all-errors -fsS http://localhost:8080/healthz; then
+            echo "::error::/healthz never answered; container log follows"
+            docker logs ggw
+            exit 1
+          fi
+          echo
+          docker logs ggw
+          docker rm -f ggw
+
+      # Trivy runs twice on the same image: a REPORT of every HIGH/CRITICAL
+      # (fixed or not) for the Security tab, then the GATE that fails only on
+      # findings that have a fix. Unfixed findings are visible, never blocking.
+      - name: trivy report (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}:ci
+          version: v0.74.0
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image.sarif
+          limit-severities-for-sarif: true
+          exit-code: "0"
+      - name: upload the report to the Security tab
+        if: github.event_name == 'push' # fork and Dependabot PR tokens are read-only
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+      - name: trivy gate (fail on FIXABLE HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}:ci
+          skip-setup-trivy: true # binary and DB from the report step (same cache dir)
+          cache: false
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+
+      # Software bill of materials: every package in the image. The same syft
+      # command as `npm run sbom`, then uploaded as a downloadable artifact.
+      - name: sbom (SPDX, via syft)
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+          anchore/syft:v1.52.0@sha256:500e2d872ac019436926e8322b4fc1f39441d94d21f6f4046c6ff29b30e8cb02
+          "docker:$IMAGE:ci" -o spdx-json > sbom.spdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ github.sha }} # downloads as a zip holding sbom.spdx.json
+          path: sbom.spdx.json
+          retention-days: 90
+
+      # ---- publish: push events only (main or a v* tag). PRs stop here. ----
+      - name: log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same context, same cache: this is a cache hit, so the pushed layers are
+      # the ones that were scanned. provenance/sbom off: keep a single manifest
+      # whose digest is what users pull and what the attestation is bound to.
+      - name: push
+        if: github.event_name == 'push'
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          provenance: false
+          sbom: false
+
+      # SLSA build provenance, signed through Sigstore, stored on GitHub and in
+      # GHCR next to the image. Anyone can verify it with the gh CLI.
+      - name: attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist for organisation-owned repos only; on a
+          # personal account the step would just warn (and want one more scope).
+          create-storage-record: false
+
+      # The SBOM is signed and attached to the same digest, so a consumer can
+      # fetch the inventory of exactly the bytes they pulled.
+      - name: attest sbom
+        if: github.event_name == 'push'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
+      - name: summary
+        if: github.event_name == 'push'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          {
+            echo "### Published"
+            echo '```'
+            echo "$TAGS"
+            echo "digest: $DIGEST"
+            echo '```'
+            echo "Verify the provenance (the package is private until made public"
+            echo "in its package settings; until then run \`docker login ghcr.io\` first):"
+            echo '```'
+            echo "gh attestation verify oci://$IMAGE@$DIGEST --owner $OWNER"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
