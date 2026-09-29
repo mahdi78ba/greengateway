@@ -1,0 +1,30 @@
+# observability/alertmanager/alertmanager.yml
+#
+# Prometheus decides THAT something is wrong. Alertmanager decides WHO hears
+# about it, HOW OFTEN, and what can stay quiet.
+#
+# In the lab every notification goes to tools/alert-sink.js, which prints it
+# (docker compose logs -f alert-sink). In production you would add a Slack,
+# PagerDuty or e-mail receiver here, reading its secret URL from a file
+# (webhook_configs: url_file), never from git.
+
+route:
+  receiver: alert-sink
+  group_by: [alertname]
+  group_wait: 10s      # wait briefly so alerts that start together arrive together
+  group_interval: 1m   # at most one update per group per minute
+  repeat_interval: 4h  # remind about a still-firing alert this often
+
+receivers:
+  - name: alert-sink
+    webhook_configs:
+      - url: http://alert-sink:9099/alerts
+        send_resolved: true
+
+inhibit_rules:
+  # No gateway at all: every other alert is a consequence, so stay quiet.
+  - source_matchers: ['alertname="GatewayAllDown"']
+    target_matchers: ['alertname!="GatewayAllDown"']
+  # The critical budget page already says "errors are high": do not notify twice.
+  - source_matchers: ['alertname="SLOErrorBudgetFastBurn"']
+    target_matchers: ['alertname=~"GatewayHighErrorRate|SLOErrorBudgetSlowBurn"']

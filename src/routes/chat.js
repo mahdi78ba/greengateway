@@ -23,6 +23,10 @@
  *     already knew how to honour it.
  *   - the all-open 503 asks the breaker per model: cooldownRemainingMs() takes
  *     one model, so passing it the whole pool always answered "retry in 1s".
+ *
+ * PHASE 5: every exit marks the request's OUTCOME (served, cache_hit,
+ * throttled, …) right before it replies. src/observability.js records it in
+ * ggw_http_requests_total, once per client request: the source of the SLIs.
  */
 
 const { createBreaker } = require('../routing/breaker');
@@ -57,6 +61,11 @@ function isFailover(status) {
 
 function baseUrl() {
   return process.env.OPENROUTER_BASE || 'https://openrouter.ai/api/v1';
+}
+
+/** PHASE 5: what the edge metric records for this request (vocabulary: src/observability.js). */
+function outcome(req, name) {
+  req.ggwOutcome = name;
 }
 
 /** Retry-After (delta-seconds or HTTP-date) -> ms; undefined when absent or junk. */
@@ -106,6 +115,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
 
       /* 1) allow-list --------------------------------------------------- */
       if (!t.allow_models.includes(requested)) {
+        outcome(req, 'rejected_policy');
         return reply.code(403).send({
           error: {
             message: `model '${requested}' is not allowed for tenant '${t.id}'`,
@@ -119,6 +129,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
       // `spend` Map by itself when Redis is unavailable.
       const already = await budget.get(t.id);
       if (budget.exceeds(already, t.budget_usd)) {
+        outcome(req, 'rejected_policy');
         return reply.code(402).send({
           error: {
             message: `tenant '${t.id}' has exhausted its budget (${already.toFixed(6)} / ${Number(t.budget_usd).toFixed(6)} USD)`,
@@ -176,6 +187,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
         reply.header('x-ggw-attempts', '0');
         reply.header('x-ggw-cost-usd', '0.000000');
         reply.header('x-ggw-tenant-spend-usd', already.toFixed(6));
+        outcome(req, 'cache_hit');
         return reply.code(200).send(entry.body);
       }
 
@@ -207,6 +219,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
           (Date.now() - startedAt) / 1000
         );
         // No upstream call, no breaker or health update, no budget charge.
+        outcome(req, 'throttled');
         return reply.code(429).send({
           error: {
             message: `local rate limit reached for window '${gate.window}'; retry in ${seconds}s`,
@@ -232,6 +245,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
           .filter((ms) => ms > 0);
         const waitMs = waits.length ? Math.min(...waits) : 1000;
         reply.header('retry-after', String(Math.max(1, Math.ceil(waitMs / 1000))));
+        outcome(req, 'unavailable');
         return reply.code(503).send({
           error: {
             message: 'all candidate models are cooling down',
@@ -282,6 +296,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
           breaker.recordFailure(model, { status: 408 });
           M.requests.inc({ tenant: t.id, model, provider: 'openrouter', status: '408' });
           if (i + 1 < maxAttempts) continue;
+          outcome(req, 'upstream_exhausted');
           return reply.code(504).send({
             error: { message: `upstream request failed: ${err && err.message}`, type: 'upstream_error' },
           });
@@ -295,6 +310,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
           const body = await res.json().catch(() => ({}));
           health.record(model, { ok: true, ms: latencyMs, status: 402 }); // FIX: ms
           M.requests.inc({ tenant: t.id, model, provider: 'openrouter', status: '402' });
+          outcome(req, 'upstream_rejected');
           return reply.code(402).send(body);
         }
 
@@ -310,6 +326,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
           if (i + 1 < maxAttempts) continue;
           reply.header('x-ggw-model', model);
           reply.header('x-ggw-attempts', String(i + 1));
+          outcome(req, 'upstream_exhausted');
           return reply.code(res.status).type('application/json').send(text || JSON.stringify({
             error: { message: 'upstream exhausted all candidates', type: 'upstream_error' },
           }));
@@ -322,6 +339,7 @@ module.exports = function chatRoutes(deps, legacyCache) {
           M.requests.inc({ tenant: t.id, model, provider: 'openrouter', status: String(res.status) });
           reply.header('x-ggw-model', model);
           reply.header('x-ggw-attempts', String(i + 1));
+          outcome(req, 'upstream_rejected');
           return reply.code(res.status).type('application/json').send(text || '{}');
         }
 
@@ -377,10 +395,12 @@ module.exports = function chatRoutes(deps, legacyCache) {
         reply.header('x-ggw-attempts', String(i + 1));
         reply.header('x-ggw-cost-usd', costUsd.toFixed(6));
         reply.header('x-ggw-tenant-spend-usd', newSpend.toFixed(6));
+        outcome(req, 'served');
         return reply.code(200).send(json);
       }
 
       /* loop fell through without returning */
+      outcome(req, 'upstream_exhausted');
       return reply.code(502).send({
         error: { message: 'no candidate model produced a response', type: 'upstream_error' },
       });

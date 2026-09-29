@@ -9,16 +9,17 @@
  * factory runs (two limiters in one process, two tests in one file). Phase-4
  * components take the metric objects by injection instead.
  *
- * Phase 3 added six cache series and Phase 4 adds five Redis / rate-limit
- * series. Neither changes anything that came before: every metric name, label
- * set and export from earlier phases is byte-identical, so the existing
- * /metrics smoke test (`/ggw_requests_total/`) and any Grafana panels keep
+ * Phase 3 added six cache series, Phase 4 five Redis / rate-limit series, and
+ * Phase 5 adds the edge series (one sample per client request, the source of
+ * every SLI), build info and Node.js runtime metrics. Phase 5 also makes the
+ * three Phase-2 model gauges live: they were declared but never set. No name or
+ * label set from an earlier phase changed, so existing tests and panels keep
  * working.
  *
  * LABEL CARDINALITY RULE: labels are drawn only from bounded, gateway-controlled
- * vocabularies — tenant id, model id, provider, status class, cache tier,
- * rate-limit window. User input (prompt text, cache keys, error strings) NEVER
- * becomes a label.
+ * vocabularies — tenant id, model id, provider, status code, cache tier,
+ * rate-limit window, route pattern, outcome. User input (prompt text, cache
+ * keys, error strings, raw URLs) NEVER becomes a label.
  */
 
 const client = require('prom-client');
@@ -31,7 +32,8 @@ const register = new client.Registry();
 
 const requests = new client.Counter({
   name: 'ggw_requests_total',
-  help: 'Total chat completion requests handled by the gateway',
+  // PHASE 5: help text corrected, name and labels unchanged.
+  help: 'Chat outcomes per UPSTREAM ATTEMPT (a failover adds one sample per attempt), plus cache hits (provider="cache") and local 429s (provider="none"). For per-request SLIs use ggw_http_requests_total',
   labelNames: ['tenant', 'model', 'provider', 'status'],
   registers: [register],
 });
@@ -59,14 +61,36 @@ const duration = new client.Histogram({
 });
 
 /* ------------------------------------------------------------------------- */
-/* Phase 2 — routing, breaker, health (UNCHANGED)                            */
+/* Phase 2 — routing, breaker, health (names and labels UNCHANGED)           */
 /* ------------------------------------------------------------------------- */
+
+/*
+ * PHASE 5: ggw_breaker_state, ggw_model_error_rate and ggw_model_latency_ms are
+ * computed at SCRAPE time from the live breaker and health objects, which
+ * src/server.js hands over with setModelStateSource(). A value set only when a
+ * request happens would go stale on a quiet model: "OPEN" long after the
+ * cooldown ended, just because nobody asked since.
+ */
+let modelSource = null;
+
+/** source = { models: string[], breakerState(model) -> 0|1|2, health(model) -> snapshot } */
+function setModelStateSource(source) {
+  modelSource = source;
+}
+
+function eachModel(fn) {
+  if (!modelSource) return;
+  for (const model of modelSource.models) fn(model);
+}
 
 const breakerState = new client.Gauge({
   name: 'ggw_breaker_state',
   help: 'Circuit breaker state per model (0=closed, 1=half-open, 2=open)',
   labelNames: ['model'],
   registers: [register],
+  collect() {
+    eachModel((model) => this.set({ model }, modelSource.breakerState(model)));
+  },
 });
 
 const breakerTransitions = new client.Counter({
@@ -81,6 +105,9 @@ const modelErrorRate = new client.Gauge({
   help: 'Rolling error rate per model (0..1)',
   labelNames: ['model'],
   registers: [register],
+  collect() {
+    eachModel((model) => this.set({ model }, Number(modelSource.health(model).errRate) || 0));
+  },
 });
 
 const modelLatency = new client.Gauge({
@@ -88,6 +115,9 @@ const modelLatency = new client.Gauge({
   help: 'Rolling latency estimate per model in milliseconds',
   labelNames: ['model'],
   registers: [register],
+  collect() {
+    eachModel((model) => this.set({ model }, Number(modelSource.health(model).p95ish) || 0));
+  },
 });
 
 const routeSelected = new client.Counter({
@@ -175,7 +205,7 @@ const cacheSavings = new client.Counter({
 });
 
 /* ------------------------------------------------------------------------- */
-/* Phase 4 — shared state (Redis) + proactive rate limiting (NEW)            */
+/* Phase 4 — shared state (Redis) + proactive rate limiting (UNCHANGED)      */
 /* ------------------------------------------------------------------------- */
 
 const redisUp = new client.Gauge({
@@ -215,6 +245,44 @@ const ratelimitRemaining = new client.Gauge({
   registers: [register],
 });
 
+/* ------------------------------------------------------------------------- */
+/* Phase 5 — the edge, build info, runtime (NEW)                             */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * ONE sample per client request, recorded when the response is sent
+ * (src/observability.js). `outcome` is decided by the gateway itself, so an SLI
+ * can say "a failover that ended in a 200 is a success" — something
+ * ggw_requests_total, which counts upstream attempts, cannot express.
+ */
+const httpRequests = new client.Counter({
+  name: 'ggw_http_requests_total',
+  help: 'HTTP responses, counted ONCE per client request, by route pattern, status code and outcome. SLIs are built on this',
+  labelNames: ['route', 'method', 'status', 'outcome', 'tenant'],
+  registers: [register],
+});
+
+/** Buckets include 10 s exactly: the latency SLO is "served in under 10 s". */
+const httpDuration = new client.Histogram({
+  name: 'ggw_http_request_duration_seconds',
+  help: 'Time from request received to response sent, per client request',
+  labelNames: ['route', 'outcome'],
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30],
+  registers: [register],
+});
+
+const buildInfo = new client.Gauge({
+  name: 'ggw_build_info',
+  help: 'Always 1. The labels say which version runs, on which Node.js, against which upstream host',
+  labelNames: ['version', 'node', 'upstream'],
+  registers: [register],
+});
+
+// Node.js runtime metrics (CPU, memory, event-loop lag, GC, handles) under
+// their standard names, so community Node.js dashboards work unchanged.
+// Module scope on purpose: calling this twice throws "already registered".
+client.collectDefaultMetrics({ register });
+
 module.exports = {
   register,
   // Phase 1
@@ -242,4 +310,9 @@ module.exports = {
   ratelimitAllowed,
   ratelimitThrottled,
   ratelimitRemaining,
+  // Phase 5
+  httpRequests,
+  httpDuration,
+  buildInfo,
+  setModelStateSource,
 };

@@ -1,0 +1,398 @@
+{
+  "id": null,
+  "uid": "greengateway-overview",
+  "title": "GreenGateway Overview",
+  "description": "SLOs, traffic, free-tier quota, upstream health and runtime. Provisioned from git: observability/grafana/dashboards/greengateway-overview.json",
+  "tags": ["greengateway", "slo"],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "enable": true,
+        "iconColor": "red",
+        "name": "Alerts firing",
+        "expr": "ALERTS{alertstate=\"firing\"}",
+        "step": "15s",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "{{severity}}",
+        "useValueForTime": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Service level — SLO: 99% of chat requests succeed over 30 days",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Availability (5m)",
+      "description": "Share of SLO-relevant chat requests that succeeded (served or cache hit). Throttled and policy-rejected requests are not counted.",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ggw:sli_availability:ratio_rate5m" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "noValue": "no traffic",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.95 }, { "color": "green", "value": 0.99 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "area", "textMode": "value", "justifyMode": "center", "orientation": "auto" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Error budget left (30d)",
+      "description": "100% = no error yet. 0% = the 1% error budget of the 30-day SLO is spent. Negative = the SLO is broken.",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "1 - ((sum(increase(ggw_http_requests_total{route=\"/v1/chat/completions\",outcome=~\"upstream_exhausted|unavailable|error\"}[30d])) or vector(0)) / sum(increase(ggw_http_requests_total{route=\"/v1/chat/completions\",outcome=~\"served|cache_hit|upstream_exhausted|unavailable|error\"}[30d]))) / 0.01" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "noValue": "no traffic",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.25 }, { "color": "green", "value": 0.5 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value", "justifyMode": "center", "orientation": "auto" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Burn rate (1h)",
+      "description": "How fast the error budget is being spent. 1x = exactly on budget for 30 days. 14.4x or more pages (SLOErrorBudgetFastBurn).",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ggw:sli_error_ratio:rate1h / 0.01" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:x",
+          "decimals": 1,
+          "noValue": "no traffic",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 14.4 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "area", "textMode": "value", "justifyMode": "center", "orientation": "auto" }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "p95 latency, served (5m)",
+      "description": "95% of requests answered by an upstream model (not the cache) were faster than this. Latency SLO: under 10 s.",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ggw:latency_served_p95_seconds:rate5m" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "noValue": "no traffic",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 5 }, { "color": "red", "value": 10 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "area", "textMode": "value", "justifyMode": "center", "orientation": "auto" }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Cache hit ratio (15m)",
+      "description": "Share of cache lookups answered from the cache. Every hit is one request not spent against the free-tier quota.",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ggw:cache_hit_ratio:rate15m" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "noValue": "no traffic",
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "area", "textMode": "value", "justifyMode": "center", "orientation": "auto" }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Shared state (Redis)",
+      "description": "DEGRADED = at least one replica lost Redis and runs on in-memory limits, budgets and cache.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "min(ggw_redis_up)" }],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no gateway",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+          "mappings": [{ "type": "value", "options": { "0": { "text": "DEGRADED", "index": 0 }, "1": { "text": "UP", "index": 1 } } }]
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value", "justifyMode": "center", "orientation": "auto" }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Alerts firing now",
+      "description": "Straight from Prometheus' ALERTS series. Notifications go through Alertmanager to the alert sink.",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ALERTS{alertstate=\"firing\"}", "legendFormat": "{{alertname}} ({{severity}})", "instant": true }],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No alerts firing",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+          "mappings": [{ "type": "value", "options": { "1": { "text": "FIRING", "index": 0 } } }]
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "justifyMode": "center", "orientation": "vertical" }
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Traffic",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 },
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Chat requests by outcome",
+      "description": "One sample per client request (ggw_http_requests_total). Green and blue are good; red counts against the SLO; yellow and orange are the caller's or the policy's doing.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (outcome) (rate(ggw_http_requests_total{route=\"/v1/chat/completions\"}[1m]))", "legendFormat": "{{outcome}}" }],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 35, "lineWidth": 1, "stacking": { "mode": "normal", "group": "A" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "served" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "cache_hit" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] },
+          { "matcher": { "id": "byName", "options": "throttled" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }] },
+          { "matcher": { "id": "byName", "options": "rejected_policy" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "unavailable" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "upstream_exhausted" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "dark-red" } }] },
+          { "matcher": { "id": "byName", "options": "error" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Latency of upstream-served requests",
+      "description": "Percentiles from the ggw_http_request_duration_seconds histogram, cache hits excluded. The dashed line is the 10 s latency SLO.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(ggw_http_request_duration_seconds_bucket{route=\"/v1/chat/completions\",outcome=\"served\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.95, sum by (le) (rate(ggw_http_request_duration_seconds_bucket{route=\"/v1/chat/completions\",outcome=\"served\"}[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(ggw_http_request_duration_seconds_bucket{route=\"/v1/chat/completions\",outcome=\"served\"}[5m])))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2, "thresholdsStyle": { "mode": "dashed" } },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "transparent", "value": null }, { "color": "red", "value": 10 }] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Upstream attempts vs requests saved by the cache",
+      "description": "Every saved request is a request NOT spent against the ~20/min, ~50/day free quota. On :free models the dollar saving is $0: the saving is quota.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(ggw_route_selected_total[1m]))", "legendFormat": "upstream attempts" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(ggw_cache_saved_requests_total[1m]))", "legendFormat": "saved by the cache" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "upstream attempts" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "saved by the cache" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Chat requests by replica",
+      "description": "Start gateway-b (npm run lab:ha) to see the second replica appear: Prometheus finds it through DNS.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (replica) (rate(ggw_http_requests_total{route=\"/v1/chat/completions\"}[1m]))", "legendFormat": "{{replica}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Free-tier quota",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Rate-limit slots left",
+      "description": "After the most recent check, per tenant and window (rpm = per minute, rpd = per day). FreeTierDailyQuotaLow fires below 5 daily slots. Symlog axis: linear near zero, logarithmic above, so a 50/day tenant and the 1,000,000/day loadtest tenant fit on one panel.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "min by (tenant, window) (ggw_ratelimit_remaining)", "legendFormat": "{{tenant}} · {{window}}" }],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2, "scaleDistribution": { "type": "symlog", "log": 10, "linearThreshold": 10 } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Refused locally by the rate limiter",
+      "description": "Local 429s: refused before reaching OpenRouter, so they cost no quota.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (tenant, window) (rate(ggw_ratelimit_throttled_total[1m]))", "legendFormat": "{{tenant}} · {{window}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "yellow" }, "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 17,
+      "type": "row",
+      "title": "Upstream models",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+      "panels": []
+    },
+    {
+      "id": 18,
+      "type": "state-timeline",
+      "title": "Circuit breakers (fleet view)",
+      "description": "max over replicas: a model any replica has opened shows as OPEN.",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 34 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (model) (ggw_breaker_state)", "legendFormat": "{{model}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "mappings": [{ "type": "value", "options": { "0": { "text": "CLOSED", "color": "green", "index": 0 }, "1": { "text": "HALF_OPEN", "color": "yellow", "index": 1 }, "2": { "text": "OPEN", "color": "red", "index": 2 } } }],
+          "custom": { "fillOpacity": 80, "lineWidth": 0 }
+        },
+        "overrides": []
+      },
+      "options": { "showValue": "auto", "mergeValues": true, "rowHeight": 0.8, "alignValue": "center", "legend": { "showLegend": false }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Model error rate",
+      "description": "EWMA of failed attempts per model (ggw_model_error_rate). This is what the router ranks models by.",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (model) (ggw_model_error_rate)", "legendFormat": "{{model}}" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Model latency (p95-ish)",
+      "description": "Recent attempt latency per model, as the router sees it (ggw_model_latency_ms).",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (model) (ggw_model_latency_ms)", "legendFormat": "{{model}}" }],
+      "fieldConfig": { "defaults": { "unit": "ms", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Failovers",
+      "description": "A failover = one attempt failed (429, 5xx, timeout) and the next candidate model was tried.",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (from, to) (rate(ggw_failover_total[1m]))", "legendFormat": "{{from}} → {{to}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 22,
+      "type": "row",
+      "title": "Runtime",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 47 },
+      "panels": []
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Event-loop lag p99",
+      "description": "Node.js runs JavaScript on one thread. If this climbs, every request waits: the saturation signal of a Node service.",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 48 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (replica) (nodejs_eventloop_lag_p99_seconds{job=\"greengateway\"})", "legendFormat": "{{replica}}" }],
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Memory (RSS)",
+      "description": "Resident memory per replica. A line that only goes up is a leak.",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 48 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (replica) (process_resident_memory_bytes{job=\"greengateway\"})", "legendFormat": "{{replica}}" }],
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    },
+    {
+      "id": 25,
+      "type": "stat",
+      "title": "What is running",
+      "description": "ggw_build_info: version, Node.js release and upstream host of each replica.",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 48 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ggw_build_info", "legendFormat": "{{replica}} · v{{version}} · node {{node}} · upstream {{upstream}}", "instant": true }],
+      "fieldConfig": { "defaults": { "noValue": "no gateway", "color": { "mode": "fixed", "fixedColor": "text" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "none", "textMode": "name", "justifyMode": "center", "orientation": "vertical" }
+    }
+  ]
+}

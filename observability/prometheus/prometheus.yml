@@ -1,0 +1,37 @@
+# observability/prometheus/prometheus.yml
+global:
+  scrape_interval: 5s       # a lab setting: 15-60 s is typical in production
+  evaluation_interval: 15s  # how often recording and alerting rules run
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # Every gateway replica, discovered through DNS. Docker's embedded DNS only
+  # answers for RUNNING containers, so gateway-b appears when the "ha" profile is
+  # up and disappears when it is not: no false "target down" for a replica you
+  # never started. The price: a replica that dies VANISHES instead of reporting
+  # up=0, which is why alerts.yml uses absent() to detect "no gateway at all".
+  - job_name: greengateway
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: ['gateway', 'gateway-b']
+        type: A
+        port: 8080
+        refresh_interval: 15s
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: replica
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['alertmanager:9093']

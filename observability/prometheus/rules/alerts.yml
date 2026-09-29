@@ -1,0 +1,120 @@
+# observability/prometheus/rules/alerts.yml
+#
+# Each alert answers, in its annotations: WHAT is wrong (summary), and WHY it
+# matters plus WHERE to look first (description).
+# Severity:  critical = act now · warning = look today · info = worth knowing.
+# Unit tests: observability/prometheus/tests/alerts.test.yml  (npm run obs:check)
+#
+# SLO: 99% of SLO-relevant chat requests succeed, over 30 days.
+# Error budget = 1% of requests. A "burn rate" of 1 spends it in exactly 30
+# days; 14.4 spends 2% of it per hour (the whole budget in ~2 days).
+
+groups:
+  - name: ggw-availability
+    rules:
+      - alert: GatewayAllDown
+        # absent(): with DNS discovery a dead replica disappears instead of
+        # reporting up == 0, so "no healthy target" is the reliable signal.
+        expr: absent(up{job="greengateway"} == 1)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: No gateway replica is up
+          description: Prometheus has not scraped a healthy gateway for 1 minute. Check `docker compose ps` and `docker compose logs gateway`.
+
+      - alert: GatewayTargetDown
+        expr: up{job="greengateway"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Replica {{ $labels.replica }} is not answering /metrics'
+          description: The container still runs (its DNS name resolves) but the scrape fails. It may be hung or overloaded.
+
+      - alert: GatewayHighErrorRate
+        # The fast, simple alert: you will see it fire about 3 minutes into an
+        # outage. The traffic guard (> 0.02 req/s, about 1 per minute) stops a
+        # single failed request on an idle gateway from paging anyone.
+        expr: ggw:sli_error_ratio:rate5m > 0.05 and ggw:sli_requests:rate5m > 0.02
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $value | humanizePercentage }} of chat requests are failing'
+          description: More than 5% of SLO-relevant chat requests failed over the last 5 minutes. Check the breaker and model panels, then the upstream.
+
+      - alert: SLOErrorBudgetFastBurn
+        # Multi-window burn rate (Google SRE workbook): the long window proves
+        # it is sustained, the short one proves it is still happening now.
+        expr: ggw:sli_error_ratio:rate1h > (14.4 * 0.01) and ggw:sli_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The 30-day error budget is burning 14x too fast
+          description: At this rate 2% of the monthly error budget (SLO 99%) is spent every hour, and all of it in about 2 days.
+
+      - alert: SLOErrorBudgetSlowBurn
+        expr: ggw:sli_error_ratio:rate6h > (6 * 0.01) and ggw:sli_error_ratio:rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The 30-day error budget is burning 6x too fast
+          description: At this rate 5% of the monthly error budget is spent every 6 hours, and all of it in about 5 days.
+
+  - name: ggw-latency
+    rules:
+      - alert: GatewayHighLatency
+        expr: ggw:latency_served_p95_seconds:rate5m > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'p95 latency of upstream-served chat requests is {{ $value | humanizeDuration }}'
+          description: The latency SLO is "95% of served requests under 10 s". Free models are often slow; the Model latency panel shows which one.
+
+  - name: ggw-dependencies
+    rules:
+      - alert: RedisDegraded
+        expr: min by (replica) (ggw_redis_up) == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Replica {{ $labels.replica }} lost Redis and runs on in-memory state'
+          description: Rate limits, budgets and the cache are now per replica, not shared. Check `docker compose ps redis`.
+
+      - alert: AllUpstreamModelsOpen
+        # max by (model): the fleet's view, so one replica that still believes
+        # a model is fine does not hide the outage. "> 0" (not "== 2"): during a
+        # long outage each breaker flips OPEN -> HALF_OPEN for the ~1 s its probe
+        # takes, then back to OPEN. "== 2" would reset `for:` at every probe.
+        expr: count(max by (model) (ggw_breaker_state) > 0) == count(max by (model) (ggw_breaker_state))
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: No upstream model is available (every circuit breaker is open or probing)
+          description: The gateway answers 503 to every request that is not a cache hit. The breakers retry by themselves after their cooldown.
+
+  - name: ggw-free-tier
+    rules:
+      - alert: FreeTierDailyQuotaLow
+        expr: min by (tenant) (ggw_ratelimit_remaining{window="rpd"}) < 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Tenant {{ $labels.tenant }} has fewer than 5 requests left today'
+          description: New questions will get a local 429 until the oldest request of the daily window is 24 h old. Cached answers keep working.
+
+      - alert: TenantThrottled
+        expr: sum by (tenant) (rate(ggw_ratelimit_throttled_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: 'Tenant {{ $labels.tenant }} is being rate-limited locally'
+          description: The proactive limiter is refusing requests, with no upstream call. Expected at the free-tier ceiling; if it lasts, the tenant needs more caching or a higher limit.

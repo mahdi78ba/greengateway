@@ -46,3 +46,15 @@ tenants:
     # No `cache:` or `limits:` block on purpose: defaults apply. It never reaches
     # either in practice, because budget_usd 0 makes the 402 fire first, which is
     # exactly what the smoke test asserts.
+
+  # Phase 5. MOCK-ONLY tenant for tools/traffic.js (demo traffic for dashboards
+  # and alert drills). Its limits are far above the free tier on purpose, so the
+  # demo shows the SLO, not the limiter. Never send its traffic to the real
+  # OpenRouter: traffic.js refuses to, unless you pass --allow-real-upstream.
+  loadtest:
+    key: gg_live_loadtest
+    budget_usd: 100
+    allow_models: [z-ai/glm-5.2:free, google/gemma-4-31b-it:free]
+    fallbacks: [google/gemma-4-31b-it:free]
+    policy: { allow_fallbacks: true, data_collection: allow }
+    limits: { rpm: 6000, rpd: 1000000 }

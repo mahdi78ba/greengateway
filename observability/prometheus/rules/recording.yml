@@ -1,0 +1,70 @@
+# observability/prometheus/rules/recording.yml
+#
+# Recording rules compute an expression on a schedule and store the result as a
+# new series. Dashboards and alerts then read ONE shared definition of each SLI
+# instead of each copying (and slowly diverging from) the same PromQL.
+# Naming convention: level:metric:operation, e.g. ggw:sli_error_ratio:rate5m.
+#
+# THE AVAILABILITY SLI (chat route only), built on the per-request edge metric:
+#   good    = served | cache_hit
+#   bad     = upstream_exhausted | unavailable | error
+#   ignored = rejected_* | throttled | upstream_rejected | not_found
+#             (the caller or the tenant's own policy caused those, so they must
+#              not burn the service's error budget)
+#
+# `or vector(0)` on the error side: with traffic but no error yet, the error
+# series does not exist, and the ratio would read "no data" instead of 0.
+
+groups:
+  - name: ggw-sli-availability
+    rules:
+      - record: ggw:sli_requests:rate5m
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"served|cache_hit|upstream_exhausted|unavailable|error"}[5m]))
+      - record: ggw:sli_errors:rate5m
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"upstream_exhausted|unavailable|error"}[5m])) or vector(0)
+      - record: ggw:sli_error_ratio:rate5m
+        expr: ggw:sli_errors:rate5m / ggw:sli_requests:rate5m
+
+      - record: ggw:sli_requests:rate30m
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"served|cache_hit|upstream_exhausted|unavailable|error"}[30m]))
+      - record: ggw:sli_errors:rate30m
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"upstream_exhausted|unavailable|error"}[30m])) or vector(0)
+      - record: ggw:sli_error_ratio:rate30m
+        expr: ggw:sli_errors:rate30m / ggw:sli_requests:rate30m
+
+      - record: ggw:sli_requests:rate1h
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"served|cache_hit|upstream_exhausted|unavailable|error"}[1h]))
+      - record: ggw:sli_errors:rate1h
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"upstream_exhausted|unavailable|error"}[1h])) or vector(0)
+      - record: ggw:sli_error_ratio:rate1h
+        expr: ggw:sli_errors:rate1h / ggw:sli_requests:rate1h
+
+      - record: ggw:sli_requests:rate6h
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"served|cache_hit|upstream_exhausted|unavailable|error"}[6h]))
+      - record: ggw:sli_errors:rate6h
+        expr: sum(rate(ggw_http_requests_total{route="/v1/chat/completions",outcome=~"upstream_exhausted|unavailable|error"}[6h])) or vector(0)
+      - record: ggw:sli_error_ratio:rate6h
+        expr: ggw:sli_errors:rate6h / ggw:sli_requests:rate6h
+
+      - record: ggw:sli_availability:ratio_rate5m
+        expr: 1 - ggw:sli_error_ratio:rate5m
+
+  # THE LATENCY SLI: requests actually answered by an upstream model
+  # (cache hits are always fast and would flatter the number).
+  - name: ggw-sli-latency
+    rules:
+      - record: ggw:latency_served_p95_seconds:rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(ggw_http_request_duration_seconds_bucket{route="/v1/chat/completions",outcome="served"}[5m])))
+      - record: ggw:latency_served_under_10s:ratio_rate5m
+        expr: |
+          sum(rate(ggw_http_request_duration_seconds_bucket{route="/v1/chat/completions",outcome="served",le="10"}[5m]))
+            /
+          sum(rate(ggw_http_request_duration_seconds_count{route="/v1/chat/completions",outcome="served"}[5m]))
+
+  - name: ggw-cache
+    rules:
+      - record: ggw:cache_hit_ratio:rate15m
+        expr: |
+          sum(rate(ggw_cache_hits_total[15m]))
+            /
+          (sum(rate(ggw_cache_hits_total[15m])) + sum(rate(ggw_cache_misses_total[15m])))

@@ -1,8 +1,19 @@
+# docker-compose.yml — the GreenGateway platform.
+#
+#   docker compose up -d --build          gateway + Redis + observability, REAL OpenRouter (.env)
+#   npm run lab:up                        the same, but against the mock upstream ($0, no quota)
+#   npm run lab:ha                        the lab with a second gateway replica
+#
+# Ports: gateway 8080 (8081 for gateway-b) · Prometheus 9090 · Alertmanager 9093
+#        alert sink 9099 · Grafana 3000 · Redis 6379
+
 services:
   gateway:
     build: .
     image: greengateway:dev
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false   # lets CI run `docker compose run … promtool` with no .env
     environment:
       # Inside the compose network Redis is "redis". The default 127.0.0.1 would
       # be the gateway container ITSELF, which leaves it degraded to memory.
@@ -20,7 +31,9 @@ services:
   gateway-b:
     image: greengateway:dev
     profiles: ["ha"]
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: redis://redis:6379
     depends_on:
@@ -56,9 +69,66 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ---------------------------------------------------------- Phase 5: observability
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v3.14.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle   # `curl -X POST localhost:9090/-/reload` re-reads config and rules
     volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
     ports:
       - "9090:9090"
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    volumes:
+      - ./observability/alertmanager:/etc/alertmanager:ro
+    ports:
+      - "9093:9093"
+    restart: unless-stopped
+
+  # Stands in for Slack/PagerDuty: prints every notification Alertmanager sends.
+  alert-sink:
+    image: greengateway:dev
+    command: ["tools/alert-sink.js"]
+    environment:
+      SINK_HOST: 0.0.0.0
+      SINK_PORT: "9099"
+    ports:
+      - "9099:9099"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    depends_on:
+      - prometheus
+    environment:
+      # LOCAL LAB SETTINGS: anyone who can reach port 3000 can view the dashboards.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/greengateway-overview.json
+      # Use the plugins bundled in the image. By default Grafana 13 downloads
+      # updates for them in the background at every start, Prometheus included,
+      # and the dashboards break for minutes while it swaps the plugin. Pinned
+      # image + no downloads = the same Grafana every time, offline too.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      # No data volume on purpose: the datasource and the dashboard are
+      # provisioned from git at every start, so Grafana holds nothing precious.
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:

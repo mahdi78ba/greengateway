@@ -1,0 +1,15 @@
+# observability/grafana/provisioning/datasources/prometheus.yml
+# Grafana reads this at startup: the Prometheus datasource exists without a
+# single click, with a fixed uid that the dashboard JSON refers to.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s  # = the scrape interval, so $__rate_interval is right

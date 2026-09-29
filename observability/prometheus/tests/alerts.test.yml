@@ -1,0 +1,251 @@
+# observability/prometheus/tests/alerts.test.yml
+#
+# Unit tests for the rules: synthetic series in, expected alerts out.
+# promtool replays time in memory, so an hour-long outage takes milliseconds.
+# Run: npm run obs:check
+#
+# Series notation:  '0+60x10' = 0, 60, 120 … 600 (11 samples, one per interval)
+#                   '5x3'     = 5, 5, 5, 5       'stale' = the series disappears
+
+rule_files:
+  - ../rules/recording.yml
+  - ../rules/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 1 ─ The SLI counts what the service caused, and ignores what the client did.
+  - name: availability SLI ignores throttled and policy-rejected requests
+    interval: 1m
+    input_series:
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="200",outcome="served",tenant="t"}'
+        values: '0+3x10'
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="503",outcome="unavailable",tenant="t"}'
+        values: '0+1x10'
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="429",outcome="throttled",tenant="t"}'
+        values: '0+10x10'
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="402",outcome="rejected_policy",tenant="t"}'
+        values: '0+10x10'
+    promql_expr_test:
+      - expr: ggw:sli_error_ratio:rate5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'ggw:sli_error_ratio:rate5m'
+            value: 0.25
+      - expr: ggw:sli_availability:ratio_rate5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'ggw:sli_availability:ratio_rate5m'
+            value: 0.75
+
+  # 2 ─ Traffic without a single error: the ratio is 0, not "no data".
+  - name: error ratio is zero when nothing failed
+    interval: 1m
+    input_series:
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="200",outcome="cache_hit",tenant="t"}'
+        values: '0+5x10'
+    promql_expr_test:
+      - expr: ggw:sli_error_ratio:rate5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'ggw:sli_error_ratio:rate5m'
+            value: 0
+
+  # 3 ─ A replica stops answering /metrics: TargetDown, then AllDown.
+  - name: a replica reports up == 0
+    interval: 1m
+    input_series:
+      - series: 'up{job="greengateway",instance="172.18.0.5:8080",replica="gateway"}'
+        values: '1 1 1 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: GatewayTargetDown
+        exp_alerts: []            # pending: `for: 1m` has not elapsed yet
+      - eval_time: 5m
+        alertname: GatewayTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: greengateway
+              instance: 172.18.0.5:8080
+              replica: gateway
+            exp_annotations:
+              summary: Replica gateway is not answering /metrics
+              description: The container still runs (its DNS name resolves) but the scrape fails. It may be hung or overloaded.
+      - eval_time: 5m
+        alertname: GatewayAllDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: No gateway replica is up
+              description: Prometheus has not scraped a healthy gateway for 1 minute. Check `docker compose ps` and `docker compose logs gateway`.
+
+  # 4 ─ The replica VANISHES (DNS discovery drops a dead container): only absent() sees it.
+  - name: the only replica disappears
+    interval: 1m
+    input_series:
+      - series: 'up{job="greengateway",instance="172.18.0.5:8080",replica="gateway"}'
+        values: '1 1 1 stale'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GatewayTargetDown
+        exp_alerts: []            # nothing reports up == 0 any more…
+      - eval_time: 5m
+        alertname: GatewayAllDown # …but absent() still fires
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: No gateway replica is up
+              description: Prometheus has not scraped a healthy gateway for 1 minute. Check `docker compose ps` and `docker compose logs gateway`.
+
+  # 5 ─ An hour of healthy traffic, then a total outage.
+  #     The simple alert fires within minutes; the burn-rate page needs the
+  #     1-hour window to cross 14.4%, which takes about 9 minutes here.
+  - name: an outage burns the error budget
+    interval: 1m
+    input_series:
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="200",outcome="served",tenant="loadtest"}'
+        values: '0+60x60 3600x30'
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="503",outcome="unavailable",tenant="loadtest"}'
+        values: '0x60 60+60x30'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: GatewayHighErrorRate
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: GatewayHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: 100% of chat requests are failing
+              description: More than 5% of SLO-relevant chat requests failed over the last 5 minutes. Check the breaker and model panels, then the upstream.
+      - eval_time: 66m
+        alertname: SLOErrorBudgetFastBurn
+        exp_alerts: []            # 6 minutes of errors are still < 14.4% of the last hour
+      - eval_time: 75m
+        alertname: SLOErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: The 30-day error budget is burning 14x too fast
+              description: At this rate 2% of the monthly error budget (SLO 99%) is spent every hour, and all of it in about 2 days.
+
+  # 6 ─ A single failure on an idle gateway must not page anyone.
+  - name: one failed request on an idle gateway stays quiet
+    interval: 1m
+    input_series:
+      - series: 'ggw_http_requests_total{route="/v1/chat/completions",method="POST",status="503",outcome="unavailable",tenant="t"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: GatewayHighErrorRate
+        exp_alerts: []
+
+  # 7 ─ Slow upstream answers.
+  - name: p95 latency above 10 s
+    interval: 1m
+    input_series:
+      - series: 'ggw_http_request_duration_seconds_bucket{route="/v1/chat/completions",outcome="served",le="10"}'
+        values: '0x20'
+      - series: 'ggw_http_request_duration_seconds_bucket{route="/v1/chat/completions",outcome="served",le="20"}'
+        values: '0+10x20'
+      - series: 'ggw_http_request_duration_seconds_bucket{route="/v1/chat/completions",outcome="served",le="+Inf"}'
+        values: '0+10x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: GatewayHighLatency
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: GatewayHighLatency
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: p95 latency of upstream-served chat requests is 19.5s
+              description: The latency SLO is "95% of served requests under 10 s". Free models are often slow; the Model latency panel shows which one.
+
+  # 8 ─ A replica loses Redis.
+  - name: redis degraded on one replica
+    interval: 1m
+    input_series:
+      - series: 'ggw_redis_up{job="greengateway",instance="172.18.0.5:8080",replica="gateway"}'
+        values: '1 1 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisDegraded
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: RedisDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              replica: gateway
+            exp_annotations:
+              summary: Replica gateway lost Redis and runs on in-memory state
+              description: Rate limits, budgets and the cache are now per replica, not shared. Check `docker compose ps redis`.
+
+  # 9 ─ One open breaker is routine; NO model available is an outage.
+  #     glm flips to HALF_OPEN (1) for a probe at 4m: that must not reset the alert.
+  - name: every breaker open or probing
+    interval: 1m
+    input_series:
+      - series: 'ggw_breaker_state{model="z-ai/glm-5.2:free",replica="gateway"}'
+        values: '0 2 2 2 1 2 2'
+      - series: 'ggw_breaker_state{model="google/gemma-4-31b-it:free",replica="gateway"}'
+        values: '0 0 0 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AllUpstreamModelsOpen
+        exp_alerts: []            # only glm is open: gemma still serves
+      - eval_time: 5m
+        alertname: AllUpstreamModelsOpen
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: No upstream model is available (every circuit breaker is open or probing)
+              description: The gateway answers 503 to every request that is not a cache hit. The breakers retry by themselves after their cooldown.
+
+  # 10 ─ The daily free-tier window is nearly used up.
+  - name: daily quota low
+    interval: 1m
+    input_series:
+      - series: 'ggw_ratelimit_remaining{tenant="treetracker-admin",window="rpd",replica="gateway"}'
+        values: '10 6 4 3 3'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FreeTierDailyQuotaLow
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: FreeTierDailyQuotaLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              tenant: treetracker-admin
+            exp_annotations:
+              summary: Tenant treetracker-admin has fewer than 5 requests left today
+              description: New questions will get a local 429 until the oldest request of the daily window is 24 h old. Cached answers keep working.
+
+  # 11 ─ Sustained local throttling.
+  - name: a tenant is throttled for 5 minutes
+    interval: 1m
+    input_series:
+      - series: 'ggw_ratelimit_throttled_total{tenant="treetracker-admin",window="rpm",replica="gateway"}'
+        values: '0+5x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TenantThrottled
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: TenantThrottled
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              tenant: treetracker-admin
+            exp_annotations:
+              summary: Tenant treetracker-admin is being rate-limited locally
+              description: The proactive limiter is refusing requests, with no upstream call. Expected at the free-tier ceiling; if it lasts, the tenant needs more caching or a higher limit.

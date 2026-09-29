@@ -1,6 +1,6 @@
 {
   "name": "greengateway",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A policy-driven LLM gateway in front of OpenRouter.",
   "license": "MIT",
   "private": true,
@@ -8,7 +8,13 @@
   "scripts": {
     "start": "node --env-file=.env src/server.js",
     "dev": "node --env-file=.env --watch src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "lab:up": "docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d --build",
+    "lab:ha": "docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile ha up -d --build",
+    "lab:down": "docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile ha down",
+    "lab:ps": "docker compose -f docker-compose.yml -f docker-compose.lab.yml --profile ha ps",
+    "traffic": "node tools/traffic.js",
+    "obs:check": "docker compose run --rm --no-deps --entrypoint promtool prometheus check config /etc/prometheus/prometheus.yml && docker compose run --rm --no-deps --entrypoint promtool prometheus test rules /etc/prometheus/tests/alerts.test.yml && docker compose run --rm --no-deps --entrypoint amtool alertmanager check-config /etc/alertmanager/alertmanager.yml"
   },
   "engines": { "node": ">=20.11" },
   "dependencies": {

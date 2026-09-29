@@ -1,0 +1,15 @@
+# observability/grafana/provisioning/dashboards/greengateway.yml
+# Loads every JSON file in /var/lib/grafana/dashboards (mounted read-only from
+# observability/grafana/dashboards). Git is the source of truth: a change made in
+# the UI cannot be saved, it has to go through a commit.
+apiVersion: 1
+
+providers:
+  - name: greengateway
+    folder: GreenGateway
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30  # picks up edited JSON without restarting Grafana
+    options:
+      path: /var/lib/grafana/dashboards

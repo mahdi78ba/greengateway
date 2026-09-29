@@ -1,0 +1,36 @@
+# docker-compose.lab.yml — the OFFLINE lab, layered on top of docker-compose.yml.
+# The gateways talk to tools/mock-openrouter.js instead of the real OpenRouter:
+# $0, no free-tier quota used, and faults on demand for alert drills.
+#
+#   npm run lab:up     platform + mock upstream
+#   npm run lab:ha     ... + gateway-b
+#   npm run lab:down   stop and remove everything (keeps the Prometheus volume)
+#
+# Values under `environment:` win over the ones read from .env (env_file).
+
+services:
+  mock-openrouter:
+    image: greengateway:dev
+    command: ["tools/mock-openrouter.js"]
+    environment:
+      MOCK_HOST: 0.0.0.0
+      MOCK_PORT: "8099"
+    ports:
+      - "8099:8099"
+    restart: unless-stopped
+
+  gateway:
+    environment:
+      OPENROUTER_BASE: http://mock-openrouter:8099
+      OPENROUTER_API_KEY: sk-mock
+    depends_on:
+      mock-openrouter:
+        condition: service_started
+
+  gateway-b:
+    environment:
+      OPENROUTER_BASE: http://mock-openrouter:8099
+      OPENROUTER_API_KEY: sk-mock
+    depends_on:
+      mock-openrouter:
+        condition: service_started
