@@ -10,7 +10,7 @@ RUN npm ci --omit=dev --ignore-scripts
 # ---- runtime stage: distroless = no shell, no package manager, no npm ----
 # nodejs24-debian13 is the only supported Node 24 line (distroless marks every
 # other tag deprecated). The :nonroot variant already runs as uid 65532.
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:bb6b03d81066993293a10feda7250e8e1cc034035fe9b61cfceededa7c8bf04d
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:9eeb7f5887d0e239e78264b06f7f11d2e14be534050481803a9e4728fcdd278e
 LABEL org.opencontainers.image.source="https://github.com/mahdi78ba/greengateway" \
       org.opencontainers.image.description="GreenGateway: a policy-driven LLM gateway in front of OpenRouter" \
       org.opencontainers.image.licenses="MIT"
