@@ -71,7 +71,7 @@ services:
 
   # ---------------------------------------------------------- Phase 5: observability
   prometheus:
-    image: prom/prometheus:v3.14.0
+    image: prom/prometheus:v3.15.1
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -85,7 +85,7 @@ services:
     restart: unless-stopped
 
   alertmanager:
-    image: prom/alertmanager:v0.34.1
+    image: prom/alertmanager:v0.34.2
     volumes:
       - ./observability/alertmanager:/etc/alertmanager:ro
     ports:
@@ -104,7 +104,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:13.2.3
+    image: grafana/grafana:13.3.0
     depends_on:
       - prometheus
     environment:
